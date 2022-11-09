@@ -2209,5 +2209,39 @@
         }
       }
     }
+  },
+  "tests/integration/test_sns.py::TestSNSProvider::test_message_structure_json_exc": {
+    "recorded-date": "25-11-2022, 18:42:09",
+    "recorded-content": {
+      "missing-default-key": {
+        "Error": {
+          "Code": "InvalidParameter",
+          "Message": "Invalid parameter: Message Structure - No default entry in JSON message body",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "invalid-json": {
+        "Error": {
+          "Code": "InvalidParameter",
+          "Message": "Invalid parameter: Message Structure - JSON message body failed to parse",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "duplicate-json-keys": {
+        "MessageId": "<uuid:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
   }
 }

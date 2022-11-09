@@ -18,7 +18,8 @@ from localstack import config
 from localstack.aws.accounts import get_aws_account_id
 from localstack.aws.api.lambda_ import Runtime
 from localstack.services.awslambda.lambda_utils import LAMBDA_RUNTIME_PYTHON37
-from localstack.services.sns.provider import PLATFORM_ENDPOINT_MSGS_ENDPOINT, SnsProvider
+from localstack.services.sns.constants import PLATFORM_ENDPOINT_MSGS_ENDPOINT
+from localstack.services.sns.provider import SnsProvider
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.utils import testutil
 from localstack.utils.net import wait_for_port_closed, wait_for_port_open
@@ -2135,14 +2136,19 @@ class TestSNSProvider:
         key = "mock_server_key"
         token = "mock_token"
 
-        platform_app_arn = sns_create_platform_application(
+        response = sns_create_platform_application(
             Name="firebase", Platform="GCM", Attributes={"PlatformCredential": key}
-        )["PlatformApplicationArn"]
+        )
+        # snapshot.match("create-platform-app", response)
 
-        endpoint_arn = sns_client.create_platform_endpoint(
+        platform_app_arn = response["PlatformApplicationArn"]
+
+        response = sns_client.create_platform_endpoint(
             PlatformApplicationArn=platform_app_arn,
             Token=token,
-        )["EndpointArn"]
+        )
+        # snapshot.match("create-platform-endpoint", response)
+        endpoint_arn = response["EndpointArn"]
 
         message = {
             "GCM": '{ "notification": {"title": "Title of notification", "body": "It works" } }'
@@ -2152,7 +2158,7 @@ class TestSNSProvider:
             sns_client.publish(
                 TargetArn=endpoint_arn, MessageStructure="json", Message=json.dumps(message)
             )
-
+        # snapshot.match("exc", ex.value.response)
         assert ex.value.response["Error"]["Code"] == "InvalidParameter"
 
     @pytest.mark.aws_validated
@@ -2637,3 +2643,39 @@ class TestSNSProvider:
             },
         )
         snapshot.match("publish-ok-2", response)
+
+    @pytest.mark.aws_validated
+    def test_message_structure_json_exc(self, sns_client, sns_create_topic, snapshot):
+        topic_arn = sns_create_topic()["TopicArn"]
+        # TODO: add batch
+
+        # missing `default` key for the JSON
+        with pytest.raises(ClientError) as e:
+            message = json.dumps({"sqs": "Test message"})
+            sns_client.publish(
+                TopicArn=topic_arn,
+                Message=message,
+                MessageStructure="json",
+            )
+        snapshot.match("missing-default-key", e.value.response)
+
+        # invalid JSON
+        with pytest.raises(ClientError) as e:
+            message = '{"default": "This is a default message"} }'
+            sns_client.publish(
+                TopicArn=topic_arn,
+                Message=message,
+                MessageStructure="json",
+            )
+        snapshot.match("invalid-json", e.value.response)
+
+        # duplicate keys: from SNS docs, should fail but does work
+        # https://docs.aws.amazon.com/sns/latest/api/API_Publish.html
+        # `Duplicate keys are not allowed.`
+        message = '{"default": "This is a default message", "default": "Duplicate"}'
+        resp = sns_client.publish(
+            TopicArn=topic_arn,
+            Message=message,
+            MessageStructure="json",
+        )
+        snapshot.match("duplicate-json-keys", resp)
