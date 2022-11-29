@@ -3366,7 +3366,7 @@
     }
   },
   "tests/integration/awslambda/test_lambda_api.py::TestLambdaEventInvokeConfig::test_lambda_eventinvokeconfig_exceptions": {
-    "recorded-date": "06-10-2022, 14:00:13",
+    "recorded-date": "30-11-2022, 09:06:56",
     "recorded-content": {
       "fn_version_result": {
         "Architectures": [
@@ -3733,6 +3733,60 @@
         "ResponseMetadata": {
           "HTTPHeaders": {},
           "HTTPStatusCode": 400
+        }
+      },
+      "put_retries_invalid_-1": {
+        "Error": {
+          "Code": "ValidationException",
+          "Message": "1 validation error detected: Value '-1' at 'maximumRetryAttempts' failed to satisfy constraint: Member must have value greater than or equal to 0"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "put_retries_invalid_3": {
+        "Error": {
+          "Code": "ValidationException",
+          "Message": "1 validation error detected: Value '3' at 'maximumRetryAttempts' failed to satisfy constraint: Member must have value less than or equal to 2"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "put_eventage_invalid_59": {
+        "Error": {
+          "Code": "ValidationException",
+          "Message": "1 validation error detected: Value '59' at 'maximumEventAgeInSeconds' failed to satisfy constraint: Member must have value greater than or equal to 60"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "put_eventage_invalid_21601": {
+        "Error": {
+          "Code": "ValidationException",
+          "Message": "1 validation error detected: Value '21601' at 'maximumEventAgeInSeconds' failed to satisfy constraint: Member must have value less than or equal to 21600"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "put_maxevent_maxvalue_result": {
+        "DestinationConfig": {
+          "OnFailure": {},
+          "OnSuccess": {}
+        },
+        "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<function-name:1>:$LATEST",
+        "LastModified": "datetime",
+        "MaximumEventAgeInSeconds": 21600,
+        "MaximumRetryAttempts": 2,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
         }
       },
       "put_pre_overwrite": {
@@ -7951,6 +8005,160 @@
         "ResponseMetadata": {
           "HTTPHeaders": {},
           "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/integration/awslambda/test_lambda_api.py::TestLambdaEventInvokeConfig::test_lambda_eventinvokeconfig_lifecycle": {
+    "recorded-date": "30-11-2022, 09:06:38",
+    "recorded-content": {
+      "put_invokeconfig_retries_0": {
+        "DestinationConfig": {
+          "OnFailure": {},
+          "OnSuccess": {}
+        },
+        "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<function-name:1>:$LATEST",
+        "LastModified": "datetime",
+        "MaximumRetryAttempts": 0,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "put_invokeconfig_eventage_60": {
+        "DestinationConfig": {
+          "OnFailure": {},
+          "OnSuccess": {}
+        },
+        "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<function-name:1>:$LATEST",
+        "LastModified": "datetime",
+        "MaximumEventAgeInSeconds": 60,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "update_invokeconfig_eventage_nochange": {
+        "DestinationConfig": {
+          "OnFailure": {},
+          "OnSuccess": {}
+        },
+        "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<function-name:1>:$LATEST",
+        "LastModified": "datetime",
+        "MaximumEventAgeInSeconds": 60,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "update_invokeconfig_retries": {
+        "DestinationConfig": {
+          "OnFailure": {},
+          "OnSuccess": {}
+        },
+        "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<function-name:1>:$LATEST",
+        "LastModified": "datetime",
+        "MaximumEventAgeInSeconds": 60,
+        "MaximumRetryAttempts": 1,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get_invokeconfig": {
+        "DestinationConfig": {
+          "OnFailure": {},
+          "OnSuccess": {}
+        },
+        "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<function-name:1>:$LATEST",
+        "LastModified": "datetime",
+        "MaximumEventAgeInSeconds": 60,
+        "MaximumRetryAttempts": 1,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "list_single_invokeconfig": {
+        "FunctionEventInvokeConfigs": [
+          {
+            "DestinationConfig": {
+              "OnFailure": {},
+              "OnSuccess": {}
+            },
+            "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<function-name:1>:$LATEST",
+            "LastModified": "datetime",
+            "MaximumEventAgeInSeconds": 60,
+            "MaximumRetryAttempts": 1
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "publish_version_result": {
+        "Architectures": [
+          "x86_64"
+        ],
+        "CodeSha256": "<code-sha256:1>",
+        "CodeSize": 264,
+        "Description": "",
+        "Environment": {
+          "Variables": {}
+        },
+        "EphemeralStorage": {
+          "Size": 512
+        },
+        "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<function-name:1>:1",
+        "FunctionName": "<function-name:1>",
+        "Handler": "handler.handler",
+        "LastModified": "date",
+        "LastUpdateStatus": "Successful",
+        "MemorySize": 128,
+        "PackageType": "Zip",
+        "RevisionId": "<uuid:1>",
+        "Role": "arn:aws:iam::111111111111:role/<resource:2>",
+        "Runtime": "python3.9",
+        "State": "Active",
+        "Timeout": 30,
+        "TracingConfig": {
+          "Mode": "PassThrough"
+        },
+        "Version": "1",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "put_published_invokeconfig": {
+        "DestinationConfig": {
+          "OnFailure": {},
+          "OnSuccess": {}
+        },
+        "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<function-name:1>:1",
+        "LastModified": "datetime",
+        "MaximumEventAgeInSeconds": 120,
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "list_paging_nolimit_postdelete": {
+        "FunctionEventInvokeConfigs": [
+          {
+            "DestinationConfig": {
+              "OnFailure": {},
+              "OnSuccess": {}
+            },
+            "FunctionArn": "arn:aws:lambda:<region>:111111111111:function:<function-name:1>:1",
+            "LastModified": "datetime",
+            "MaximumEventAgeInSeconds": 120
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
         }
       }
     }
