@@ -674,15 +674,17 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
             raise InvalidParameterException(
                 "Invalid parameter: MessageGroupId Reason: The request includes MessageGroupId parameter that is not valid for this topic type"
             )
-
+        is_endpoint_publish = target_arn and ":endpoint/" in target_arn
         if message_structure == "json":
             try:
                 message = json.loads(message)
-                if "default" not in message:
+                # TODO: check no default key for direct TargetArn endpoint publish
+                # see example: https://docs.aws.amazon.com/sns/latest/dg/sns-send-custom-platform-specific-payloads-mobile-devices.html
+                if "default" not in message and not is_endpoint_publish:
                     raise InvalidParameterException(
                         "Invalid parameter: Message Structure - No default entry in JSON message body"
                     )
-            except Exception:
+            except json.JSONDecodeError:
                 raise InvalidParameterException(
                     "Invalid parameter: Message Structure - JSON message body failed to parse"
                 )
@@ -694,12 +696,20 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
 
         # No need to create a topic to send SMS or single push notifications with SNS
         # but we can't mock a sending so we only return that it went well
-        # TODO: VALIDATE IF TARGET_ARN EXISTS !!!!!
-        if not phone_number and not target_arn:
-            if topic_arn not in store.sns_subscriptions:
-                raise NotFoundException(
-                    "Topic does not exist",
-                )
+        # TODO: VALIDATE IF TARGET_ARN EXISTS !!!!! and also if topic exists if in target_arn?
+        if not phone_number:
+            if is_endpoint_publish:
+                moto_sns_backend = sns_backends[context.account_id][context.region]
+                if target_arn not in moto_sns_backend.platform_endpoints:
+                    raise InvalidParameterException(
+                        "Invalid parameter: TargetArn Reason: No endpoint found for the target arn specified"
+                    )
+            else:
+                topic = topic_arn or target_arn
+                if topic not in store.sns_subscriptions:
+                    raise NotFoundException(
+                        "Topic does not exist",
+                    )
 
         message_ctx = SnsMessage(
             type="Notification",
@@ -714,7 +724,7 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
             message=message_ctx, store=store, request_headers=context.request.headers
         )
 
-        if target_arn and ":endpoint/" in target_arn:
+        if is_endpoint_publish:
             self._publisher.publish_to_application_endpoint(
                 ctx=publish_ctx, endpoint_arn=target_arn
             )
@@ -1015,7 +1025,7 @@ def _format_platform_endpoint_messages(sent_messages: List[Dict[str, str]]):
     formatted_messages = []
     for sent_message in sent_messages:
         msg = {
-            key: value[0] if isinstance(value, list) else value
+            key: value if key != "Message" else json.dumps(value)
             for key, value in sent_message.items()
             if key in validated_keys
         }
