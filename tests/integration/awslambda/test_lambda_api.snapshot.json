@@ -3735,46 +3735,6 @@
           "HTTPStatusCode": 400
         }
       },
-      "put_retries_invalid_-1": {
-        "Error": {
-          "Code": "ValidationException",
-          "Message": "1 validation error detected: Value '-1' at 'maximumRetryAttempts' failed to satisfy constraint: Member must have value greater than or equal to 0"
-        },
-        "ResponseMetadata": {
-          "HTTPHeaders": {},
-          "HTTPStatusCode": 400
-        }
-      },
-      "put_retries_invalid_3": {
-        "Error": {
-          "Code": "ValidationException",
-          "Message": "1 validation error detected: Value '3' at 'maximumRetryAttempts' failed to satisfy constraint: Member must have value less than or equal to 2"
-        },
-        "ResponseMetadata": {
-          "HTTPHeaders": {},
-          "HTTPStatusCode": 400
-        }
-      },
-      "put_eventage_invalid_59": {
-        "Error": {
-          "Code": "ValidationException",
-          "Message": "1 validation error detected: Value '59' at 'maximumEventAgeInSeconds' failed to satisfy constraint: Member must have value greater than or equal to 60"
-        },
-        "ResponseMetadata": {
-          "HTTPHeaders": {},
-          "HTTPStatusCode": 400
-        }
-      },
-      "put_eventage_invalid_21601": {
-        "Error": {
-          "Code": "ValidationException",
-          "Message": "1 validation error detected: Value '21601' at 'maximumEventAgeInSeconds' failed to satisfy constraint: Member must have value less than or equal to 21600"
-        },
-        "ResponseMetadata": {
-          "HTTPHeaders": {},
-          "HTTPStatusCode": 400
-        }
-      },
       "put_maxevent_maxvalue_result": {
         "DestinationConfig": {
           "OnFailure": {},
