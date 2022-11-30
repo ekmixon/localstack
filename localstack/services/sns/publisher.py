@@ -171,26 +171,21 @@ class SqsTopicPublisher(BaseTopicPublisher):
         try:
             queue_url = sqs_queue_url_for_arn(subscriber["Endpoint"])
             parsed_arn = parse_arn(subscriber["Endpoint"])
-            print(f"trying to get client for {context.message.message}")
             sqs_client = aws_stack.connect_to_service("sqs", region_name=parsed_arn["region"])
-            print(f"got client for {context.message.message}")
             kwargs = {}
             if message_context.message_group_id:
                 kwargs["MessageGroupId"] = message_context.message_group_id
             if message_context.message_deduplication_id:
                 kwargs["MessageDeduplicationId"] = message_context.message_deduplication_id
-            print(f"trying to send? for {context.message.message}")
-            resp = sqs_client.send_message(
+            sqs_client.send_message(
                 QueueUrl=queue_url,
                 MessageBody=message_body,
                 MessageAttributes=sqs_message_attrs,
                 MessageSystemAttributes=create_sqs_system_attributes(context.request_headers),
                 **kwargs,
             )
-            print(f"sending sqs {resp}\nfor {context.message.message}")
             store_delivery_log(message_context, subscriber, success=True)
         except Exception as exc:
-            print(f"exec?? for {context.message.message}")
             LOG.info("Unable to forward SNS message to SQS: %s %s", exc, traceback.format_exc())
             store_delivery_log(message_context, subscriber, success=False)
             sns_error_to_dead_letter_queue(
@@ -709,12 +704,10 @@ class PublishDispatcher:
     def publish_to_topic(self, ctx: SnsPublishContext, topic_arn: str) -> None:
         subscriptions = ctx.store.sns_subscriptions.get(topic_arn, [])
         for subscriber in subscriptions:
-            print("iterating over subscribers")
-            # TODO: check if should send with filter!
+
             if self._should_publish(ctx, subscriber):
                 notifier = self.topic_notifiers[subscriber["Protocol"]]
                 LOG.debug("Submitting task to the executor for notifier %s", notifier)
-                print("submitting task")
                 self.executor.submit(notifier.publish, context=ctx, subscriber=subscriber)
 
     def publish_to_phone_number(self, ctx: SnsPublishContext, phone_number: str) -> None:

@@ -439,7 +439,6 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
                         "Invalid parameter: The topic should either have ContentBasedDeduplication enabled or MessageDeduplicationId provided explicitly",
                     )
 
-        # TODO: VALIDATE PUBLISH BATCH MESSAGE STRUCTURE!!!!
         store = self.get_store()
         if topic_arn not in store.sns_subscriptions:
             raise NotFoundException(
@@ -454,6 +453,19 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
                 # if a message contains non-valid message attributes
                 # will fail for the first non-valid message encountered, and raise ParameterValueInvalid
                 validate_message_attributes(message_attributes)
+
+            # TODO: WRITE AWS VALIDATED
+            if entry.get("MessageStructure") == "json":
+                try:
+                    message = json.loads(entry.get("Message"))
+                    if "default" not in message:
+                        raise InvalidParameterException(
+                            "Invalid parameter: Message Structure - No default entry in JSON message body"
+                        )
+                except json.JSONDecodeError:
+                    raise InvalidParameterException(
+                        "Invalid parameter: Message Structure - JSON message body failed to parse"
+                    )
 
         for entry in publish_batch_request_entries:
             publish_ctx = SnsPublishContext(
@@ -491,7 +503,7 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
         if attribute_name == "FilterPolicy":
             # TODO: decode and store here?? check created time too
             store = self.get_store()
-            # TODO: get error with invalidJSON
+            # TODO: get error with invalidJSON : WRITE AWS VALIDATED TEST
             store.subscription_filter_policy[subscription_arn] = json.loads(attribute_value or "{}")
             pass
         elif attribute_name == "RawMessageDelivery":
@@ -830,7 +842,6 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
     def tag_resource(
         self, context: RequestContext, resource_arn: AmazonResourceName, tags: TagList
     ) -> TagResourceResponse:
-        # TODO: can this be used to tag any resource when using AWS?
         # each tag key must be unique
         # https://docs.aws.amazon.com/general/latest/gr/aws_tagging.html#tag-best-practices
         unique_tag_keys = {tag["Key"] for tag in tags}
@@ -888,6 +899,7 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
 def get_subscription_by_arn(sub_arn):
     store = SnsProvider.get_store()
     # TODO maintain separate map instead of traversing all items
+    # how to deprecate the store without breaking pods/persistence
     for key, subscriptions in store.sns_subscriptions.items():
         for sub in subscriptions:
             if sub["SubscriptionArn"] == sub_arn:
@@ -988,19 +1000,6 @@ def extract_tags(topic_arn, tags, is_create_topic_request, store):
             if is_create_topic_request and existing_tags is not None and tag not in existing_tags:
                 return False
     return True
-
-
-def unsubscribe_sqs_queue(queue_url):
-    """Called upon deletion of an SQS queue, to remove the queue from subscriptions"""
-    # TODO: deprecated, used in legacy SQS provider.
-    # delete when legacy is deleted, and behaviour is wrong, this should not happen
-    store = SnsProvider.get_store()
-    for topic_arn, subscriptions in store.sns_subscriptions.items():
-        subscriptions = store.sns_subscriptions.get(topic_arn, [])
-        for subscriber in list(subscriptions):
-            sub_url = subscriber.get("sqs_queue_url") or subscriber["Endpoint"]
-            if queue_url == sub_url:
-                subscriptions.remove(subscriber)
 
 
 def register_sns_api_resource(router: Router):

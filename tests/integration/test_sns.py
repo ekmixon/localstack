@@ -1313,7 +1313,6 @@ class TestSNSProvider:
                 MessageAttributeNames=["All"],
                 AttributeNames=["All"],
             )
-            print(sqs_response)
             for message in sqs_response["Messages"]:
                 if message["MessageId"] in message_ids_received:
                     sqs_client.delete_message(
