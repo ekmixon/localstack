@@ -22,6 +22,7 @@ from localstack.services.sns.constants import PLATFORM_ENDPOINT_MSGS_ENDPOINT
 from localstack.services.sns.provider import SnsProvider
 from localstack.testing.aws.util import is_aws_cloud
 from localstack.utils import testutil
+from localstack.utils.aws.arns import parse_arn
 from localstack.utils.net import wait_for_port_closed, wait_for_port_open
 from localstack.utils.strings import short_uid, to_str
 from localstack.utils.sync import poll_condition, retry
@@ -551,16 +552,17 @@ class TestSNSProvider:
         assert "MessageId" in response
         assert response["ResponseMetadata"]["HTTPStatusCode"] == 200
 
-    @pytest.mark.only_localstack
-    def test_publish_non_existent_target(self, sns_client):
+    @pytest.mark.aws_validated
+    def test_publish_non_existent_target(self, sns_client, sns_create_topic, snapshot):
         # todo: fix test, the client id in the ARN is wrong so can't test against AWS
+        topic_arn = sns_create_topic()["TopicArn"]
+        account_id = parse_arn(topic_arn)["account"]
         with pytest.raises(ClientError) as ex:
             sns_client.publish(
-                TargetArn="arn:aws:sns:us-east-1:000000000000:endpoint/APNS/abcdef/0f7d5971-aa8b-4bd5-b585-0826e9f93a66",
+                TargetArn=f"arn:aws:sns:us-east-1:{account_id}:endpoint/APNS/abcdef/0f7d5971-aa8b-4bd5-b585-0826e9f93a66",
                 Message="This is a push notification",
             )
-
-        assert ex.value.response["Error"]["Code"] == "InvalidClientTokenId"
+        snapshot.match("non-existent-endpoint", ex.value.response)
 
     @pytest.mark.aws_validated
     def test_tags(self, sns_client, sns_create_topic, snapshot):
@@ -1140,6 +1142,26 @@ class TestSNSProvider:
         retry(check_messages, sleep=0.5)
 
     @pytest.mark.aws_validated
+    def test_publish_wrong_phone_format(
+        self, sns_client, sns_create_topic, sns_subscription, snapshot
+    ):
+        message = "Good news everyone!"
+        with pytest.raises(ClientError) as e:
+            sns_client.publish(Message=message, PhoneNumber="+1a234")
+
+        snapshot.match("invalid-number", e.value.response)
+
+        with pytest.raises(ClientError) as e:
+            sns_client.publish(Message=message, PhoneNumber="NAA+15551234567")
+
+        snapshot.match("wrong-format", e.value.response)
+
+        topic_arn = sns_create_topic()["TopicArn"]
+        with pytest.raises(ClientError) as e:
+            sns_subscription(TopicArn=topic_arn, Protocol="sms", Endpoint="NAA+15551234567")
+        snapshot.match("wrong-endpoint", e.value.response)
+
+    @pytest.mark.aws_validated
     @pytest.mark.skip_snapshot_verify(
         paths=[
             "$..Attributes.Owner",
@@ -1291,9 +1313,12 @@ class TestSNSProvider:
                 MessageAttributeNames=["All"],
                 AttributeNames=["All"],
             )
-
+            print(sqs_response)
             for message in sqs_response["Messages"]:
                 if message["MessageId"] in message_ids_received:
+                    sqs_client.delete_message(
+                        QueueUrl=queue_url, ReceiptHandle=message["ReceiptHandle"]
+                    )
                     continue
 
                 message_ids_received.add(message["MessageId"])
@@ -1530,8 +1555,32 @@ class TestSNSProvider:
 
         # todo add test and implement behaviour for ContentBasedDeduplication or MessageDeduplicationId
 
+    @pytest.mark.aws_validated
+    def test_subscribe_to_sqs_with_queue_url(
+        self,
+        sns_client,
+        sns_create_topic,
+        sqs_client,
+        sqs_create_queue,
+        sns_subscription,
+        snapshot,
+    ):
+        topic = sns_create_topic()
+        topic_arn = topic["TopicArn"]
+        queue_url = sqs_create_queue()
+        with pytest.raises(ClientError) as e:
+            sns_subscription(TopicArn=topic_arn, Protocol="sqs", Endpoint=queue_url)
+        snapshot.match("sub-queue-url", e.value.response)
+
+    @pytest.mark.aws_validated
     def test_publish_sqs_from_sns_with_xray_propagation(
-        self, sns_client, sns_create_topic, sqs_client, sqs_create_queue, sns_subscription
+        self,
+        sns_client,
+        sns_create_topic,
+        sqs_client,
+        sqs_create_queue,
+        sns_create_sqs_subscription,
+        snapshot,
     ):
         def add_xray_header(request, **kwargs):
             request.headers[
@@ -1544,8 +1593,7 @@ class TestSNSProvider:
             topic = sns_create_topic()
             topic_arn = topic["TopicArn"]
             queue_url = sqs_create_queue()
-
-            sns_subscription(TopicArn=topic_arn, Protocol="sqs", Endpoint=queue_url)
+            sns_create_sqs_subscription(topic_arn=topic_arn, queue_url=queue_url)
             sns_client.publish(TargetArn=topic_arn, Message="X-Ray propagation test msg")
 
             response = sqs_client.receive_message(
@@ -1559,8 +1607,7 @@ class TestSNSProvider:
 
             assert len(response["Messages"]) == 1
             message = response["Messages"][0]
-            assert "Attributes" in message
-            assert "AWSTraceHeader" in message["Attributes"]
+            snapshot.match("xray-msg", message)
             assert (
                 message["Attributes"]["AWSTraceHeader"]
                 == "Root=1-3152b799-8954dae64eda91bc9a23a7e8;Parent=7fa8c0f79203be72;Sampled=1"

@@ -1,3 +1,4 @@
+import re
 from string import ascii_letters, digits
 
 SNS_PROTOCOLS = [
@@ -12,8 +13,10 @@ SNS_PROTOCOLS = [
     "firehose",
 ]
 
-MSG_ATTR_NAME_REGEX = r"^(?!\.)(?!.*\.$)(?!.*\.\.)[a-zA-Z0-9_\-.]+$"
+MSG_ATTR_NAME_REGEX = re.compile(r"^(?!\.)(?!.*\.$)(?!.*\.\.)[a-zA-Z0-9_\-.]+$")
+ATTR_TYPE_REGEX = re.compile(r"^(String|Number|Binary)\..+$")
 VALID_MSG_ATTR_NAME_CHARS = set(ascii_letters + digits + "." + "-" + "_")
+
 
 GCM_URL = "https://fcm.googleapis.com/fcm/send"
 

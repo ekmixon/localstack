@@ -1488,8 +1488,29 @@
     }
   },
   "tests/integration/test_sns.py::TestSNSProvider::test_publish_sqs_from_sns_with_xray_propagation": {
-    "recorded-date": "09-08-2022, 11:35:46",
-    "recorded-content": {}
+    "recorded-date": "30-11-2022, 18:18:00",
+    "recorded-content": {
+      "xray-msg": {
+        "Attributes": {
+          "AWSTraceHeader": "Root=1-3152b799-8954dae64eda91bc9a23a7e8;Parent=7fa8c0f79203be72;Sampled=1",
+          "SentTimestamp": "timestamp"
+        },
+        "Body": {
+          "Type": "Notification",
+          "MessageId": "<uuid:1>",
+          "TopicArn": "arn:aws:sns:<region>:111111111111:<resource:1>",
+          "Message": "X-Ray propagation test msg",
+          "Timestamp": "date",
+          "SignatureVersion": "1",
+          "Signature": "<signature>",
+          "SigningCertURL": "https://sns.<region>.amazonaws.com/SimpleNotificationService-<signing-cert-file:1>",
+          "UnsubscribeURL": "<unsubscribe-domain>/?Action=Unsubscribe&SubscriptionArn=arn:aws:sns:<region>:111111111111:<resource:1>:<resource:2>"
+        },
+        "MD5OfBody": "<md5-hash>",
+        "MessageId": "<uuid:2>",
+        "ReceiptHandle": "<receipt-handle:1>"
+      }
+    }
   },
   "tests/integration/test_sns.py::TestSNSProvider::test_subscription_after_failure_to_deliver": {
     "recorded-date": "10-08-2022, 17:04:52",
@@ -2240,6 +2261,76 @@
         "ResponseMetadata": {
           "HTTPHeaders": {},
           "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/integration/test_sns.py::TestSNSProvider::test_publish_non_existent_target": {
+    "recorded-date": "30-11-2022, 17:03:38",
+    "recorded-content": {
+      "non-existent-endpoint": {
+        "Error": {
+          "Code": "InvalidParameter",
+          "Message": "Invalid parameter: TargetArn Reason: No endpoint found for the target arn specified",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/integration/test_sns.py::TestSNSProvider::test_publish_wrong_phone_format": {
+    "recorded-date": "30-11-2022, 17:20:37",
+    "recorded-content": {
+      "invalid-number": {
+        "Error": {
+          "Code": "InvalidParameter",
+          "Message": "Invalid parameter: PhoneNumber Reason: +1a234 is not valid to publish to",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "wrong-format": {
+        "Error": {
+          "Code": "InvalidParameter",
+          "Message": "Invalid parameter: PhoneNumber Reason: NAA+15551234567 is not valid to publish to",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "wrong-endpoint": {
+        "Error": {
+          "Code": "InvalidParameter",
+          "Message": "Invalid SMS endpoint: NAA+15551234567",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/integration/test_sns.py::TestSNSProvider::test_subscribe_to_sqs_with_queue_url": {
+    "recorded-date": "30-11-2022, 18:09:39",
+    "recorded-content": {
+      "sub-queue-url": {
+        "Error": {
+          "Code": "InvalidParameter",
+          "Message": "Invalid parameter: SQS endpoint ARN",
+          "Type": "Sender"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
         }
       }
     }

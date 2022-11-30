@@ -12,13 +12,19 @@ from typing import Dict, List, Union
 import requests
 
 from localstack import config
+from localstack.aws.api.lambda_ import InvocationType
 from localstack.aws.api.sns import MessageAttributeMap
 from localstack.aws.api.sqs import MessageBodyAttributeMap
 from localstack.config import external_service_url
 from localstack.services.sns.models import SnsMessage, SnsStore, SnsSubscription
 from localstack.utils.aws import aws_stack
+from localstack.utils.aws.arns import (
+    extract_region_from_arn,
+    extract_resource_from_arn,
+    parse_arn,
+    sqs_queue_url_for_arn,
+)
 from localstack.utils.aws.aws_responses import create_sqs_system_attributes
-from localstack.utils.aws.aws_stack import extract_region_from_arn, parse_arn
 from localstack.utils.aws.dead_letter_queue import sns_error_to_dead_letter_queue
 from localstack.utils.cloudwatch.cloudwatch_util import store_cloudwatch_logs
 from localstack.utils.json import json_safe
@@ -48,6 +54,16 @@ class SnsPublishContext:
 
 class BaseTopicPublisher:
     def publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
+        try:
+            self._publish(context=context, subscriber=subscriber)
+        except Exception:
+            LOG.exception(
+                "An internal error occurred while trying to send the SNS message %s",
+                context.message,
+            )
+            return
+
+    def _publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
         raise NotImplementedError
 
     def prepare_message(self, message_context: SnsMessage, subscriber: SnsSubscription) -> str:
@@ -56,6 +72,16 @@ class BaseTopicPublisher:
 
 class BaseEndpointPublisher:
     def publish(self, context: SnsPublishContext, endpoint: str):
+        try:
+            self._publish(context=context, endpoint=endpoint)
+        except Exception:
+            LOG.exception(
+                "An internal error occurred while trying to send the SNS message %s",
+                context.message,
+            )
+            return
+
+    def _publish(self, context: SnsPublishContext, endpoint: str):
         raise NotImplementedError
 
     def prepare_message(self, context: SnsPublishContext, endpoint: str) -> str:
@@ -63,7 +89,7 @@ class BaseEndpointPublisher:
 
 
 class LambdaTopicPublisher(BaseTopicPublisher):
-    def publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
+    def _publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
         try:
             lambda_client = aws_stack.connect_to_service(
                 "lambda", region_name=extract_region_from_arn(subscriber["Endpoint"])
@@ -72,7 +98,9 @@ class LambdaTopicPublisher(BaseTopicPublisher):
             inv_result = lambda_client.invoke(
                 FunctionName=subscriber["Endpoint"],
                 Payload=to_bytes(json.dumps(event)),
-                InvocationType="RequestResponse" if config.SYNCHRONOUS_SNS_EVENTS else "Event",
+                InvocationType=InvocationType.RequestResponse
+                if config.SYNCHRONOUS_SNS_EVENTS
+                else InvocationType.Event,  # DEPRECATED
             )
             status_code = inv_result.get("StatusCode")
             payload = inv_result.get("Payload")
@@ -130,32 +158,39 @@ class LambdaTopicPublisher(BaseTopicPublisher):
 
 
 class SqsTopicPublisher(BaseTopicPublisher):
-    def publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
+    def _publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
         message_context = context.message
-        message_body = self.prepare_message(message_context, subscriber)
-        sqs_message_attrs = self.create_sqs_message_attributes(
-            subscriber, message_context.message_attributes
-        )
         try:
-            queue_url = aws_stack.sqs_queue_url_for_arn(subscriber["Endpoint"])
+            message_body = self.prepare_message(message_context, subscriber)
+            sqs_message_attrs = self.create_sqs_message_attributes(
+                subscriber, message_context.message_attributes
+            )
+        except Exception:
+            LOG.exception("An internal error occurred while trying to send the message to SQS")
+            return
+        try:
+            queue_url = sqs_queue_url_for_arn(subscriber["Endpoint"])
             parsed_arn = parse_arn(subscriber["Endpoint"])
+            print(f"trying to get client for {context.message.message}")
             sqs_client = aws_stack.connect_to_service("sqs", region_name=parsed_arn["region"])
-
+            print(f"got client for {context.message.message}")
             kwargs = {}
             if message_context.message_group_id:
                 kwargs["MessageGroupId"] = message_context.message_group_id
             if message_context.message_deduplication_id:
                 kwargs["MessageDeduplicationId"] = message_context.message_deduplication_id
-
-            sqs_client.send_message(
+            print(f"trying to send? for {context.message.message}")
+            resp = sqs_client.send_message(
                 QueueUrl=queue_url,
                 MessageBody=message_body,
                 MessageAttributes=sqs_message_attrs,
                 MessageSystemAttributes=create_sqs_system_attributes(context.request_headers),
                 **kwargs,
             )
+            print(f"sending sqs {resp}\nfor {context.message.message}")
             store_delivery_log(message_context, subscriber, success=True)
         except Exception as exc:
+            print(f"exec?? for {context.message.message}")
             LOG.info("Unable to forward SNS message to SQS: %s %s", exc, traceback.format_exc())
             store_delivery_log(message_context, subscriber, success=False)
             sns_error_to_dead_letter_queue(
@@ -197,7 +232,7 @@ class SqsTopicPublisher(BaseTopicPublisher):
 
 
 class HttpTopicPublisher(BaseTopicPublisher):
-    def publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
+    def _publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
         message_context = context.message
         message_body = self.prepare_message(message_context, subscriber)
         try:
@@ -245,7 +280,7 @@ class HttpTopicPublisher(BaseTopicPublisher):
 
 
 class EmailJsonTopicPublisher(BaseTopicPublisher):
-    def publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
+    def _publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
         ses_client = aws_stack.connect_to_service("ses")
         if endpoint := subscriber.get("Endpoint"):
             ses_client.verify_email_address(EmailAddress=endpoint)
@@ -268,7 +303,7 @@ class EmailTopicPublisher(EmailJsonTopicPublisher):
 
 
 class ApplicationTopicPublisher(BaseTopicPublisher):
-    def publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
+    def _publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
         endpoint_arn = subscriber["Endpoint"]
         message = self.prepare_message(context.message, subscriber)
         cache = context.store.platform_endpoint_messages[endpoint_arn] = (
@@ -302,7 +337,7 @@ class ApplicationTopicPublisher(BaseTopicPublisher):
 
 
 class SmsTopicPublisher(BaseTopicPublisher):
-    def publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
+    def _publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
         event = self.prepare_message(context.message, subscriber)
         context.store.sms_messages.append(event)
         LOG.info(
@@ -333,13 +368,13 @@ class SmsTopicPublisher(BaseTopicPublisher):
 
 
 class FirehoseTopicPublisher(BaseTopicPublisher):
-    def publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
+    def _publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
         message_body = self.prepare_message(context.message, subscriber)
         try:
             firehose_client = aws_stack.connect_to_service("firehose")
             endpoint = subscriber["Endpoint"]
             if endpoint:
-                delivery_stream = aws_stack.extract_resource_from_arn(endpoint).split("/")[1]
+                delivery_stream = extract_resource_from_arn(endpoint).split("/")[1]
                 firehose_client.put_record(
                     DeliveryStreamName=delivery_stream, Record={"Data": to_bytes(message_body)}
                 )
@@ -353,7 +388,7 @@ class FirehoseTopicPublisher(BaseTopicPublisher):
 
 
 class SmsPhoneNumberPublisher(BaseEndpointPublisher):
-    def publish(self, context: SnsPublishContext, endpoint: str):
+    def _publish(self, context: SnsPublishContext, endpoint: str):
         event = self.prepare_message(context.message, endpoint)
         context.store.sms_messages.append(event)
         LOG.info(
@@ -374,7 +409,7 @@ class SmsPhoneNumberPublisher(BaseEndpointPublisher):
 
 
 class ApplicationEndpointPublisher(BaseEndpointPublisher):
-    def publish(self, context: SnsPublishContext, endpoint: str):
+    def _publish(self, context: SnsPublishContext, endpoint: str):
         message = self.prepare_message(context.message, endpoint)
         cache = context.store.platform_endpoint_messages[endpoint] = (
             context.store.platform_endpoint_messages.get(endpoint) or []
@@ -674,10 +709,12 @@ class PublishDispatcher:
     def publish_to_topic(self, ctx: SnsPublishContext, topic_arn: str) -> None:
         subscriptions = ctx.store.sns_subscriptions.get(topic_arn, [])
         for subscriber in subscriptions:
+            print("iterating over subscribers")
             # TODO: check if should send with filter!
             if self._should_publish(ctx, subscriber):
                 notifier = self.topic_notifiers[subscriber["Protocol"]]
                 LOG.debug("Submitting task to the executor for notifier %s", notifier)
+                print("submitting task")
                 self.executor.submit(notifier.publish, context=ctx, subscriber=subscriber)
 
     def publish_to_phone_number(self, ctx: SnsPublishContext, phone_number: str) -> None:

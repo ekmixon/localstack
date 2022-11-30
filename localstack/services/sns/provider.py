@@ -1,17 +1,15 @@
 import json
 import logging
-import re
 from typing import Dict, List
 
+from botocore.utils import InvalidArnException
 from moto.sns import sns_backends
 from moto.sns.exceptions import DuplicateSnsEndpointError
 from moto.sns.models import MAXIMUM_MESSAGE_LENGTH
-from moto.sns.utils import is_e164  # TODO: validate phone number
+from moto.sns.utils import is_e164
 
 from localstack.aws.accounts import get_aws_account_id
 from localstack.aws.api import RequestContext
-from localstack.aws.api.core import CommonServiceException
-from localstack.aws.api.lambda_ import InvocationType
 from localstack.aws.api.sns import (
     ActionsList,
     AmazonResourceName,
@@ -85,6 +83,7 @@ from localstack.services.sns import constants as sns_constants
 from localstack.services.sns.models import SnsMessage, SnsStore, SnsSubscription, sns_stores
 from localstack.services.sns.publisher import PublishDispatcher, SnsPublishContext
 from localstack.utils.aws import aws_stack
+from localstack.utils.aws.arns import parse_arn
 from localstack.utils.strings import short_uid
 
 # set up logger
@@ -456,6 +455,7 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
                 # will fail for the first non-valid message encountered, and raise ParameterValueInvalid
                 validate_message_attributes(message_attributes)
 
+        for entry in publish_batch_request_entries:
             publish_ctx = SnsPublishContext(
                 message=SnsMessage.from_batch_entry(entry),
                 store=store,
@@ -490,6 +490,9 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
         sub[attribute_name] = attribute_value
         if attribute_name == "FilterPolicy":
             # TODO: decode and store here?? check created time too
+            store = self.get_store()
+            # TODO: get error with invalidJSON
+            store.subscription_filter_policy[subscription_arn] = json.loads(attribute_value or "{}")
             pass
         elif attribute_name == "RawMessageDelivery":
             # TODO: only for SQS and https(s) subs, + firehose
@@ -645,7 +648,7 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
         # TODO: check for topic + target + phone number at the same time?
         if phone_number and not is_e164(phone_number):
             raise InvalidParameterException(
-                "Invalid parameter: Phone number does not meet the E164 format"
+                f"Invalid parameter: PhoneNumber Reason: {phone_number} is not valid to publish to"
             )
 
         if len(message) > MAXIMUM_MESSAGE_LENGTH:
@@ -710,7 +713,15 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
         publish_ctx = SnsPublishContext(
             message=message_ctx, store=store, request_headers=context.request.headers
         )
-        self._publisher.publish_to_topic(publish_ctx, topic_arn)
+
+        if target_arn and ":endpoint/" in target_arn:
+            self._publisher.publish_to_application_endpoint(
+                ctx=publish_ctx, endpoint_arn=target_arn
+            )
+        elif phone_number:
+            self._publisher.publish_to_phone_number(ctx=publish_ctx, phone_number=phone_number)
+        else:
+            self._publisher.publish_to_topic(publish_ctx, topic_arn or target_arn)
 
         return PublishResponse(MessageId=message_ctx.message_id)
 
@@ -734,6 +745,16 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
             raise InvalidParameterException(
                 "Invalid parameter: Endpoint must match the specified protocol"
             )
+        elif protocol == "sms" and not is_e164(endpoint):
+            raise InvalidParameterException(f"Invalid SMS endpoint: {endpoint}")
+
+        # TODO: sync validation of endpoint??? try it
+        elif protocol == "sqs":
+            try:
+                parse_arn(endpoint)
+            except InvalidArnException:
+                raise InvalidParameterException("Invalid parameter: SQS endpoint ARN")
+
         if ".fifo" in endpoint and ".fifo" not in topic_arn:
             raise InvalidParameterException(
                 "Invalid parameter: Invalid parameter: Endpoint Reason: FIFO SQS Queues can not be subscribed to standard SNS topics"
@@ -752,6 +773,8 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
                 return SubscribeResponse(
                     SubscriptionArn=existing_topic_subscription["SubscriptionArn"]
                 )
+        if filter_policy:
+            store.subscription_filter_policy = json.loads(filter_policy)
 
         subscription = {
             # http://docs.aws.amazon.com/cli/latest/reference/sns/get-subscription-attributes.html
@@ -890,7 +913,11 @@ def validate_message_attributes(message_attributes: MessageAttributeMap) -> None
         validate_message_attribute_name(attr_name)
         # `DataType` is a required field for MessageAttributeValue
         data_type = attr["DataType"]
-        if data_type not in ("String", "Number", "Binary") and not ATTR_TYPE_REGEX.match(data_type):
+        if data_type not in (
+            "String",
+            "Number",
+            "Binary",
+        ) and not sns_constants.ATTR_TYPE_REGEX.match(data_type):
             raise InvalidParameterValueException(
                 f"The message attribute '{attr_name}' has an invalid message attribute type, the set of supported type prefixes is Binary, Number, and String."
             )

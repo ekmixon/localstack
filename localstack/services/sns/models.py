@@ -29,6 +29,10 @@ class SnsMessage:
     token: Optional[str] = None
     message_id: str = field(default_factory=long_uid)
 
+    def __post_init__(self):
+        if self.message_attributes is None:
+            self.message_attributes = {}
+
     def message_content(self, protocol: SnsProtocols) -> str:
         if self.message_structure == "json":
             return self.message.get(protocol, self.message["default"])
