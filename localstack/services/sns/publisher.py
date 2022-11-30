@@ -52,6 +52,13 @@ class SnsPublishContext:
     request_headers: Dict[str, str]
 
 
+@dataclass
+class SnsBatchFifoPublishContext:
+    messages: List[SnsMessage]
+    store: SnsStore
+    request_headers: Dict[str, str]
+
+
 class BaseTopicPublisher:
     def publish(self, context: SnsPublishContext, subscriber: SnsSubscription):
         try:
@@ -224,6 +231,82 @@ class SqsTopicPublisher(BaseTopicPublisher):
                 message_attributes[key] = attribute
 
         return message_attributes
+
+
+class SqsBatchFifoTopicPublisher(SqsTopicPublisher):
+    def _publish(self, context: SnsBatchFifoPublishContext, subscriber: SnsSubscription):
+        entries = []
+        sqs_system_attrs = create_sqs_system_attributes(context.request_headers)
+        # TODO: check ID, SNS rules are not the same as SQS, so maybe generate the entries ID
+        failure_map = {}
+        for index, message_ctx in enumerate(context.messages):
+            message_body = self.prepare_message(message_ctx, subscriber)
+            sqs_message_attrs = self.create_sqs_message_attributes(
+                subscriber, message_ctx.message_attributes
+            )
+            entry = {"Id": f"sns-batch-{index}", "MessageBody": message_body}
+            # in case of failure
+            failure_map[entry["Id"]] = {
+                "context": message_ctx,
+                "entry": entry,
+            }
+            if sqs_message_attrs:
+                entry["MessageAttributes"] = sqs_message_attrs
+
+            if message_ctx.message_group_id:
+                entry["MessageGroupId"] = message_ctx.message_group_id
+
+            if message_ctx.message_deduplication_id:
+                # TODO: check this, not sure it's the same behaviour, should be, beware
+                entry["MessageDeduplicationId"] = message_ctx.message_deduplication_id
+
+            if sqs_system_attrs:
+                entry["MessageSystemAttributes"] = sqs_system_attrs
+
+            entries.append(entry)
+
+        try:
+            queue_url = sqs_queue_url_for_arn(subscriber["Endpoint"])
+            parsed_arn = parse_arn(subscriber["Endpoint"])
+            sqs_client = aws_stack.connect_to_service("sqs", region_name=parsed_arn["region"])
+            response = sqs_client.send_message_batch(QueueUrl=queue_url, Entries=entries)
+
+            for message_ctx in context.messages:
+                store_delivery_log(message_ctx, subscriber, success=True)
+
+            if failed_messages := response.get("Failed"):
+                for failed_msg in failed_messages:
+                    failure_data = failure_map.get(failed_msg["Id"])
+                    LOG.info(
+                        "Unable to forward SNS message to SQS: %s %s",
+                        failed_msg["Code"],
+                        failed_msg["Message"],
+                    )
+                    store_delivery_log(failure_data["context"], subscriber, success=False)
+                    sns_error_to_dead_letter_queue(
+                        sns_subscriber=subscriber,
+                        message=failure_data["entry"]["MessageBody"],
+                        error=failed_msg["Code"],
+                        msg_attrs=failure_data["entry"]["MessageAttributes"],
+                    )
+
+        except Exception as exc:
+            # TODO: need to AWS validate this
+            LOG.info("Unable to forward SNS message to SQS: %s %s", exc, traceback.format_exc())
+            for msg_context in context.messages:
+                store_delivery_log(msg_context, subscriber, success=False)
+                msg_body = self.prepare_message(msg_context, subscriber)
+                sqs_message_attrs = self.create_sqs_message_attributes(
+                    subscriber, msg_context.message_attributes
+                )
+                sns_error_to_dead_letter_queue(
+                    subscriber, msg_body, str(exc), msg_attrs=sqs_message_attrs
+                )
+            if "NonExistentQueue" in str(exc):
+                LOG.debug("The SQS queue endpoint does not exist anymore")
+                # todo: if the queue got deleted, even if we recreate a queue with the same name/url
+                #  AWS won't send to it anymore. Would need to unsub/resub.
+                #  We should mark this subscription as "broken"
 
 
 class HttpTopicPublisher(BaseTopicPublisher):
@@ -675,27 +758,30 @@ class PublishDispatcher:
         "lambda": LambdaTopicPublisher(),
         "firehose": FirehoseTopicPublisher(),
     }
-
+    fifo_batch_topic_notifier = SqsBatchFifoTopicPublisher()
     sms_notifier = SmsPhoneNumberPublisher()
     application_notifier = ApplicationEndpointPublisher()
+
     subscription_filter = SubscriptionFilter()
 
-    def __init__(self, num_thread: int = 5):
+    def __init__(self, num_thread: int = 10):
         self.executor = ThreadPoolExecutor(num_thread, thread_name_prefix="sns_pub")
 
     def shutdown(self):
         self.executor.shutdown(wait=False)
 
-    def _should_publish(self, ctx: SnsPublishContext, subscriber: SnsSubscription):
+    def _should_publish(
+        self, store: SnsStore, message_ctx: SnsMessage, subscriber: SnsSubscription
+    ):
         subscriber_arn = subscriber["SubscriptionArn"]
-        filter_policy = ctx.store.subscription_filter_policy.get(subscriber_arn)
+        filter_policy = store.subscription_filter_policy.get(subscriber_arn)
         if not filter_policy:
             return True
         # default value is `MessageAttributes`
         match subscriber.get("FilterPolicyScope", "MessageAttributes"):
             case "MessageAttributes":
                 return self.subscription_filter.check_filter_policy_on_message_attributes(
-                    filter_policy=filter_policy, message_attributes=ctx.message.message_attributes
+                    filter_policy=filter_policy, message_attributes=message_ctx.message_attributes
                 )
             case "MessageBody":
                 # TODO: not implemented yet
@@ -704,16 +790,39 @@ class PublishDispatcher:
     def publish_to_topic(self, ctx: SnsPublishContext, topic_arn: str) -> None:
         subscriptions = ctx.store.sns_subscriptions.get(topic_arn, [])
         for subscriber in subscriptions:
-
-            if self._should_publish(ctx, subscriber):
+            if self._should_publish(ctx.store, ctx.message, subscriber):
                 notifier = self.topic_notifiers[subscriber["Protocol"]]
                 LOG.debug("Submitting task to the executor for notifier %s", notifier)
                 self.executor.submit(notifier.publish, context=ctx, subscriber=subscriber)
 
+    def publish_batch_to_fifo_topic(self, ctx: SnsBatchFifoPublishContext, topic_arn: str) -> None:
+        subscriptions = ctx.store.sns_subscriptions.get(topic_arn, [])
+        for subscriber in subscriptions:
+            ctx.messages = [
+                message
+                for message in ctx.messages
+                if self._should_publish(ctx.store, message, subscriber)
+            ]
+            if not ctx.messages:
+                LOG.debug(
+                    "No messages match filter policy, not sending batch %s",
+                    self.fifo_batch_topic_notifier,
+                )
+                return
+
+            LOG.debug(
+                "Submitting task to the executor for notifier %s", self.fifo_batch_topic_notifier
+            )
+            self.executor.submit(
+                self.fifo_batch_topic_notifier.publish, context=ctx, subscriber=subscriber
+            )
+
     def publish_to_phone_number(self, ctx: SnsPublishContext, phone_number: str) -> None:
+        LOG.debug("Submitting task to the executor for notifier %s", self.sms_notifier)
         self.executor.submit(self.sms_notifier.publish, context=ctx, endpoint=phone_number)
 
     def publish_to_application_endpoint(self, ctx: SnsPublishContext, endpoint_arn: str) -> None:
+        LOG.debug("Submitting task to the executor for notifier %s", self.application_notifier)
         self.executor.submit(self.application_notifier.publish, context=ctx, endpoint=endpoint_arn)
 
     def publish_to_topic_subscriber(

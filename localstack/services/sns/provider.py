@@ -81,7 +81,11 @@ from localstack.services.moto import call_moto
 from localstack.services.plugins import ServiceLifecycleHook
 from localstack.services.sns import constants as sns_constants
 from localstack.services.sns.models import SnsMessage, SnsStore, SnsSubscription, sns_stores
-from localstack.services.sns.publisher import PublishDispatcher, SnsPublishContext
+from localstack.services.sns.publisher import (
+    PublishDispatcher,
+    SnsBatchFifoPublishContext,
+    SnsPublishContext,
+)
 from localstack.utils.aws import aws_stack
 from localstack.utils.aws.arns import parse_arn
 from localstack.utils.strings import short_uid
@@ -419,13 +423,19 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
                 "The batch request contains more entries than permissible."
             )
 
+        store = self.get_store()
+        if topic_arn not in store.sns_subscriptions:
+            raise NotFoundException(
+                "Topic does not exist",
+            )
+
         ids = [entry["Id"] for entry in publish_batch_request_entries]
         if len(set(ids)) != len(publish_batch_request_entries):
             raise BatchEntryIdsNotDistinctException(
                 "Two or more batch entries in the request have the same Id."
             )
 
-        if topic_arn and ".fifo" in topic_arn:
+        if fifo_topic := ".fifo" in topic_arn:
             if not all(["MessageGroupId" in entry for entry in publish_batch_request_entries]):
                 raise InvalidParameterException(
                     "Invalid parameter: The MessageGroupId parameter is required for FIFO topics"
@@ -438,12 +448,6 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
                     raise InvalidParameterException(
                         "Invalid parameter: The topic should either have ContentBasedDeduplication enabled or MessageDeduplicationId provided explicitly",
                     )
-
-        store = self.get_store()
-        if topic_arn not in store.sns_subscriptions:
-            raise NotFoundException(
-                "Topic does not exist",
-            )
 
         # TODO: implement SNS MessageDeduplicationId and ContentDeduplication checks
         response = {"Successful": [], "Failed": []}
@@ -467,23 +471,38 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
                         "Invalid parameter: Message Structure - JSON message body failed to parse"
                     )
 
-        for entry in publish_batch_request_entries:
-            publish_ctx = SnsPublishContext(
-                message=SnsMessage.from_batch_entry(entry),
+        # TODO: write AWS validated tests with FilterPolicy and batching
+        if fifo_topic:
+            message_contexts = []
+            for entry in publish_batch_request_entries:
+                msg_ctx = SnsMessage.from_batch_entry(entry)
+                message_contexts.append(msg_ctx)
+                response["Successful"].append({"Id": entry["Id"], "MessageId": msg_ctx.message_id})
+            publish_ctx = SnsBatchFifoPublishContext(
+                messages=message_contexts,
                 store=store,
                 request_headers=context.request.headers,
             )
+            self._publisher.publish_batch_to_fifo_topic(publish_ctx, topic_arn)
 
-            # TODO: find a scenario where we can fail to send a message synchronously to be able to report it
-            # right now, it seems that AWS fails the whole publish if something is wrong in the format of 1 message
-            try:
-                self._publisher.publish_to_topic(publish_ctx, topic_arn)
-                response["Successful"].append(
-                    {"Id": entry["Id"], "MessageId": publish_ctx.message.message_id}
+        else:
+            for entry in publish_batch_request_entries:
+                publish_ctx = SnsPublishContext(
+                    message=SnsMessage.from_batch_entry(entry),
+                    store=store,
+                    request_headers=context.request.headers,
                 )
-            except Exception:
-                LOG.exception("Error while batch publishing to %s: entry %s", topic_arn, entry)
-                response["Failed"].append({"Id": entry["Id"]})
+
+                # TODO: find a scenario where we can fail to send a message synchronously to be able to report it
+                # right now, it seems that AWS fails the whole publish if something is wrong in the format of 1 message
+                try:
+                    self._publisher.publish_to_topic(publish_ctx, topic_arn)
+                    response["Successful"].append(
+                        {"Id": entry["Id"], "MessageId": publish_ctx.message.message_id}
+                    )
+                except Exception:
+                    LOG.exception("Error while batch publishing to %s: entry %s", topic_arn, entry)
+                    response["Failed"].append({"Id": entry["Id"]})
 
         return PublishBatchResponse(**response)
 
@@ -520,6 +539,7 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
         store = self.get_store()
         sub_arn = None
         # TODO: this is false, we validate only one sub and not all for topic
+        # WRITE AWS VALIDATED TEST FOR IT
         for k, v in store.subscription_status.items():
             if v.get("Token") == token and v["TopicArn"] == topic_arn:
                 v["Status"] = "Subscribed"
@@ -743,6 +763,8 @@ class SnsProvider(SnsApi, ServiceLifecycleHook):
         elif phone_number:
             self._publisher.publish_to_phone_number(ctx=publish_ctx, phone_number=phone_number)
         else:
+            # TODO: beware if FIFO, order is guaranteed yet. Semaphore? might block workers
+            # 2 quick call in succession might be unordered in the executor? need to try it with many threads
             self._publisher.publish_to_topic(publish_ctx, topic_arn or target_arn)
 
         return PublishResponse(MessageId=message_ctx.message_id)
